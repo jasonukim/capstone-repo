@@ -22,7 +22,7 @@ library(readr)
 # Main dataset
 
 collisions <- read_csv("D:/Google Drive/Data Analysis/136/capstone-repo/Datasets/Collisions - Processed.csv", 
-    col_types = cols(collision_date = col_date(format = "%m/%d/%Y"))
+    col_types = cols(collision_date = col_date(format = "%m/%d/%Y")))
 
 # Datasets to be joined on Neighbourhood ID to collisions dataframe
 
