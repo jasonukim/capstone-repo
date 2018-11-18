@@ -1,0 +1,99 @@
+---
+title: "Clustering High Collision Areas in Toronto"
+output: html_notebook
+author: Jason Kim
+---
+
+*Loading the Datasets*
+
+The differences between this dataset and the original collisions.csv dataset are the following:
+
+- only car-on-pedestrian and car-on-cyclist collisions were kept; car-on-car, car-on-property collisions were excluded 
+
+- spatial joined in QGIS using the Toronto Neighbourhoods shapefile, which added a Neighourhood ID and Neighbourhood name field to each observation (if a collision took place within the boundaries of a neighbourhood, it was given the corresponding Neighbourhood label)
+
+- spatial joined in QGIS using the Toronto Centrelines shapefile, which added a unique street ID (LFN_ID) and total length in kilometres of the primary road the collision took place on as new fields to the dataset 
+
+- street name columns were merged into a single column called street1 
+
+
+```{r}
+library(readr)
+# Main dataset
+
+collisions <- read_csv("D:/Google Drive/Data Analysis/136/capstone-repo/Datasets/Collisions - Processed.csv", 
+    col_types = cols(collision_date = col_date(format = "%m/%d/%Y"))
+
+# Datasets to be joined on Neighbourhood ID to collisions dataframe
+
+hood_profiles <- read_csv("D:/Google Drive/Data Analysis/136/capstone-repo/Datasets/Joined Sets (Neighbourhood-level Data)/Processed - Hood Profiles 2016.csv")
+
+income <- read_csv("D:/Google Drive/Data Analysis/136/capstone-repo/Datasets/Joined Sets (Neighbourhood-level Data)/Processed - Income.csv")
+
+civics <- read_csv("D:/Google Drive/Data Analysis/136/capstone-repo/Datasets/Joined Sets (Neighbourhood-level Data)/Processed - Civics.csv")
+
+economics <- read_csv("D:/Google Drive/Data Analysis/136/capstone-repo/Datasets/Joined Sets (Neighbourhood-level Data)/Processed - Economics.csv")
+
+transportation <- read_csv("D:/Google Drive/Data Analysis/136/capstone-repo/Datasets/Joined Sets (Neighbourhood-level Data)/Processed - Transportation.csv")  
+
+language <- read_csv("D:/Google Drive/Data Analysis/136/capstone-repo/Datasets/Joined Sets (Neighbourhood-level Data)/Processed - Language.csv")
+
+# join the above tables to the collisions dataset
+main.df <- merge(collisions, hood_profiles, by.x = "AREA_S_CD", by.y = "Hood ID", all.x = T)
+main.df <- merge(main.df, income, by.x = "AREA_S_CD", by.y = "HOOD ID", all.x = T)
+main.df <- merge(main.df, language, by.x = "AREA_S_CD", by.y = "HOOD ID", all.x = T)
+main.df <- merge(main.df, civics, by.x = "AREA_S_CD", by.y = "Neighbourhood Id", all.x = T)
+main.df <- merge(main.df, economics, by.x = "AREA_S_CD", by.y = "Neighbourhood Id", all.x = T)
+main.df <- merge(main.df, transportation, by.x = "AREA_S_CD", by.y = "Neighbourhood Id", all.x = T)
+colnames(main.df)
+
+# drop redundant columns
+
+main.df$`HOOD NAME.x` <- NULL
+main.df$`Hood Name`<- NULL
+main.df$`HOOD NAME.y`<- NULL
+main.df$Neighbourhood.x <- NULL
+main.df$Neighbourhood.y <- NULL
+main.df$Neighbourhood <- NULL
+main.df$`Total % In LIM-AT.y` <- NULL
+main.df$`Total % In LIM-AT` <- main.df$`Total % In LIM-AT.x`
+main.df$`Total % In LIM-AT.x` <- NULL
+colnames(main.df)
+```
+
+*Cleaning*
+
+```{r}
+dim(main.df)
+
+# Remove variables with 50% or more missing values
+main.df <- main.df[, colMeans(is.na(main.df)) <= .5]
+dim(main.df)
+
+# Remove variables with zero or near zero variance (aka nearly all rows have same value)
+library(caret)
+nzv <- nearZeroVar(main.df)
+nzv
+
+main.df <- main.df[,-nzv]
+dim(main.df)
+
+# subset numeric variables 
+main.df_num <- Filter(is.numeric, main.df)
+
+cor_main.df <- cor(main.df_num)
+# find attributes that are highly corrected i.e. >|0.9| (candidates for removal due to pair-wise correlations)
+highlyCorrelated <- findCorrelation(cor_main.df, cutoff=0.9, verbose = T)
+# print indexes of highly correlated attributes
+print(highlyCorrelated)
+
+# No numerical variables have correlations >0.9, meaning there is little risk of colinearity 
+summary(main.df)
+str(main.df)
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
