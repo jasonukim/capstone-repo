@@ -189,7 +189,7 @@ library(maptools)
 library(ggmap)
 library(rgeos)
 
-register_google(key = "AIzaSyBwXArBPS6-g3f2-rzWXJyz0NhcK5I5eUc")
+register_google(key = "PUT API KEY HERE")
 toronto_map <- ggmap(get_googlemap(center = c(-79.4, 43.7), zoom = 11, scale = 1, maptype = "roadmap"))
 toronto_map + geom_point(aes(x = longitude, y = latitude, color = involved_injury_class), data = pedestrian.df, alpha = 0.3, size = 0.75) + 
   theme(legend.position="bottom")
