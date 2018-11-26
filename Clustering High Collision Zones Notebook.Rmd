@@ -4,9 +4,9 @@ output: html_notebook
 author: Jason Kim
 ---
 
-*Loading the Datasets*
+*Extract, Transform, and Loading the Dataset*
 
-The differences between this dataset and the original collisions.csv dataset are the following:
+The differences between this dataset and the original collisions.csv dataset are that the following ETL processes were applied to it:
 
 - only car-on-pedestrian and car-on-cyclist collisions were kept; car-on-car, car-on-property collisions were excluded 
 
@@ -16,7 +16,10 @@ The differences between this dataset and the original collisions.csv dataset are
 
 - street name columns were merged into a single column called street1 
 
+- engineered several binary features which check whether an area has above the city's average for that measure. E.g. businessess_check checks whether the area has more than the average number of businesses or not. 
 
+
+*Joining the Datasets*
 ```{r}
 library(readr)
 # Main dataset
@@ -47,6 +50,12 @@ main.df <- merge(main.df, economics, by.x = "AREA_S_CD", by.y = "Neighbourhood I
 main.df <- merge(main.df, transportation, by.x = "AREA_S_CD", by.y = "Neighbourhood Id", all.x = T)
 colnames(main.df)
 
+# turn four-digit integer into time 
+summary(main.df$collision_time)
+main.df$collision_time <- substr(as.POSIXct(sprintf("%04.0f", main.df$collision_time), format='%H%M'), 12, 16)
+main.df$collision_time <- as.POSIXct(main.df$collision_time, format = '%H:%M')
+head(main.df$collision_time)
+
 # drop redundant columns
 
 main.df$`HOOD NAME.x` <- NULL
@@ -59,41 +68,420 @@ main.df$`Total % In LIM-AT.y` <- NULL
 main.df$`Total % In LIM-AT` <- main.df$`Total % In LIM-AT.x`
 main.df$`Total % In LIM-AT.x` <- NULL
 colnames(main.df)
+
+# remove all rows containing non-pedestrian collisions 
+pedestrian.df <- main.df[which(main.df$involved_class == "PEDESTRIAN"),]
+unique(pedestrian.df$involved_class)
+
+# drop non-pedestrian columns 
+pedestrian.df <- pedestrian.df[,-c(14,24,27,30:31)]
+dim(pedestrian.df)
 ```
 
-*Cleaning*
+*Data Cleaning*
 
 ```{r}
-dim(main.df)
-
 # Remove variables with 50% or more missing values
-main.df <- main.df[, colMeans(is.na(main.df)) <= .5]
-dim(main.df)
+pedestrian.df <- pedestrian.df[, colMeans(is.na(pedestrian.df)) <= .5]
+dim(pedestrian.df)
 
 # Remove variables with zero or near zero variance (aka nearly all rows have same value)
 library(caret)
-nzv <- nearZeroVar(main.df)
+nzv <- nearZeroVar(pedestrian.df)
 nzv
 
-main.df <- main.df[,-nzv]
-dim(main.df)
+# the below columns have near zero variance 
+colnames(pedestrian.df)[12]
+colnames(pedestrian.df)[20]
 
+pedestrian.df <- pedestrian.df[,-nzv]
+dim(pedestrian.df)
+
+# how many missing values?
+sum(is.na(pedestrian.df))
+
+# where are the missing values located? 
+na_count <- sapply(pedestrian.df, function(x)
+  sum(length(which(is.na(x)))))
+na_count <- data.frame(na_count)
+print(na_count)
+
+# there are 107 rows with no identifiable neighbourhood ID so these can be removed
+pedestrian.df <- pedestrian.df[-which(is.na(pedestrian.df$AREA_S_CD)),]
+
+# px isn't used in our analysis since its a unique id for joining to some other table
+# streets with unknown LFN_IDs mean no length could be calculated for that street; since street length is important in our analysis to measure collision density, these unknown streets should be removed
+# involved_age and light are also important variables we'd like to correlate so we can remove records with NAs for these 
+
+dim(pedestrian.df)
+# prior to cleaning, there are 16665 rows, 84 features
+pedestrian.df <- pedestrian.df[,-5]
+pedestrian.df <- pedestrian.df[-which(is.na(pedestrian.df$LFN_ID)),]
+pedestrian.df <- pedestrian.df[-which(is.na(pedestrian.df$involved_age)),]
+pedestrian.df <- pedestrian.df[-which(is.na(pedestrian.df$light)),]
+dim(pedestrian.df)
+
+#for street_2 and street_type 2 -- many times when a collision is reported, only the street the collision took place on is reported, not the intersecting street. street_type_2 contains the type of street the intersecting street is which is not useful. We will keep street_2 since it could be useful for human understanding where we tend to think of streets in terms of intersections not GPS coordinates 
+
+pedestrian.df <- pedestrian.df[,-9]
+
+# missing values in cleaned data set
+na_count <- sapply(pedestrian.df, function(x)
+  sum(length(which(is.na(x)))))
+na_count <- data.frame(na_count)
+na_count
+
+# location_desc, intital_dir, pedestrian_action, pedestrian_collision_type
+# all 4 of these features are qualitative, categorical variables that further describe the collision so missing values here don't matter to our analysis and represent either truly unknown or non-applicable situations 
+
+unique(pedestrian.df$location_desc)
+unique(pedestrian.df$initial_dir)
+unique(pedestrian.df$pedestrian_action)
+unique(pedestrian.df$pedestrian_collision_type)
+
+# looking for very strong pair-wise correlation aka colinearity 
 # subset numeric variables 
-main.df_num <- Filter(is.numeric, main.df)
+pedestrian.df_num <- Filter(is.numeric, pedestrian.df)
 
-cor_main.df <- cor(main.df_num)
+cor_pedestrian.df <- cor(pedestrian.df_num)
 # find attributes that are highly corrected i.e. >|0.9| (candidates for removal due to pair-wise correlations)
-highlyCorrelated <- findCorrelation(cor_main.df, cutoff=0.9, verbose = T)
-# print indexes of highly correlated attributes
-print(highlyCorrelated)
+highlyCorrelated <- findCorrelation(cor_pedestrian.df, cutoff=0.9, verbose = T)
 
-# No numerical variables have correlations >0.9, meaning there is little risk of colinearity 
-summary(main.df)
-str(main.df)
+#Compare row 34  and column  32 with corr  0.938 
+#  Means:  0.395 vs 0.254 so flagging column 34 
+#Compare row 32  and column  31 with corr  0.938 
+#  Means:  0.364 vs 0.25 so flagging column 32 
+#Compare row 42  and column  53 with corr  0.912 
+#  Means:  0.321 vs 0.247 so flagging column 42 
+#Compare row 49  and column  53 with corr  0.918 
+#  Means:  0.316 vs 0.245 so flagging column 49 
+#Compare row 24  and column  25 with corr  1 
+ # Means:  0.305 vs 0.242 so flagging column 24 
+#Compare row 63  and column  10 with corr  0.923 
+#  Means:  0.285 vs 0.24 so flagging column 63 
+#All correlations <= 0.9 
+
+# print names of highly correlated attributes 
+highlyCorrelated_names <- colnames(cor_pedestrian.df)[highlyCorrelated]
+highlyCorrelated_names
+# none of these variables having very high correlation seem to matter much for our analysis so they are to be kept in for now
 ```
 
-Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+*Exploring the Data*
+```{r}
+# Missing Values
+sum(is.na(pedestrian.df))
+na_count
+# 4132 missing values, all of them categorical variables
 
-When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+# Summary Statistics 
+summary(pedestrian.df)
+str(pedestrian.df)
 
-The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+# The dataset contains many features that are related to each other so Principal Component Analysis (PCA) will help reduce the dimensionality greatly 
+
+# Let's map these collisions to get an intuition for the problem the city is facing
+# install dev build of ggmap library
+#if(!requireNamespace("devtools")) install.packages("devtools")
+#devtools::install_github("dkahle/ggmap", ref = "tidyup", force = T)
+
+library(maptools)
+library(ggmap)
+library(rgeos)
+
+register_google(key = "AIzaSyBwXArBPS6-g3f2-rzWXJyz0NhcK5I5eUc")
+toronto_map <- ggmap(get_googlemap(center = c(-79.4, 43.7), zoom = 11, scale = 1, maptype = "roadmap"))
+toronto_map + geom_point(aes(x = longitude, y = latitude, color = involved_injury_class), data = pedestrian.df, alpha = 0.3, size = 0.75) + 
+  theme(legend.position="bottom")
+
+# The collisions seem to be concentrated in the downtown core and North York; fatal collisions are rare events; the grid-like pattern of the collisions suggests arterial roads are a risk factor for collisions rather than small residential roads 
+
+#toronto_hoods_map <- "D:/Google Drive/Data Analysis/136/capstone-repo/Datasets/Shapefiles (Geo-data)/neighbourhood boundaries/NEIGHBORHOODS_WGS84_2.shp"
+#shapefile <- readShapePoly(toronto_hoods_map)
+#plot(shapefile)
+#pedestrian.df_shape <- merge(pedestrian.df, shapefile, by = 'AREA_S_CD')
+
+# Use Kernal Density Estimation (KDE) to show the density of collisions in Toronto
+toronto_map + stat_density2d(aes(x = longitude, y = latitude, fill = ..level.., alpha = 0.4, color = 'cyan'), data = pedestrian.df, size = 0.1, bins = 10, geom = "polygon") + geom_density2d(data = pedestrian.df, aes(x = longitude, y = latitude), size = 0.3)
+
+
+# perhaps a trend can be observed if we differentiate between collisions resulting in death or seriously injury vs. non-KSI collisions so we look at that below
+
+# subset the Killed or Seriously Injured incidents and non-KSIs
+ksi_df <- pedestrian.df[pedestrian.df$involved_injury_class == "FATAL" | pedestrian.df$involved_injury_class == "MAJOR",]
+dim(ksi_df)
+
+nonksi_df <- pedestrian.df[-(pedestrian.df$involved_injury_class == "FATAL" | pedestrian.df$involved_injury_class == "MAJOR"),]
+dim(nonksi_df) 
+
+# is there a pattern in where pedestrians were killed or seriously injured?
+toronto_map + geom_point(aes(x = longitude, y = latitude, color = involved_injury_class), data = ksi_df, alpha = 0.5, size = 1.5) + 
+  theme(legend.position="bottom")
+# KSIs seem to roughly correspond to areas that have high collisions
+
+# Use Kernal Density Estimation (KDE) to show the density of KSI collisions in Toronto
+toronto_map + stat_density2d(aes(x = longitude, y = latitude, fill = ..level.., alpha = 0.4, color = 'cyan'), data = ksi_df, size = 0.1, bins = 10, geom = "polygon") + geom_density2d(data = ksi_df, aes(x = longitude, y = latitude), size = 0.3)
+
+# Use Kernal Density Estimation (KDE) to show the density of non-KSI collisions in Toronto
+toronto_map + stat_density2d(aes(x = longitude, y = latitude, fill = ..level.., alpha = 0.4, color = 'cyan'), data = nonksi_df, size = 0.1, bins = 10, geom = "polygon") + geom_density2d(data = nonksi_df, aes(x = longitude, y = latitude), size = 0.3)
+
+# The non-KSIs seem to be more diffuse when compared to KSI collisions, but both seem to occur with more frequency in the same locations 
+# just in case I want to study this further, I will engineer a new feature called ksi_check where "1" means the collision is a KSI, "0" not. I also added nonksi_check as a feature since I believe there is a pair-wise correlation between KSI and non-KSI collisions. 
+
+dim(pedestrian.df)
+pedestrian.df <- pedestrian.df[-(pedestrian.df$involved_injury_class == "NONE"),]
+dim(pedestrian.df)
+
+pedestrian.df$ksi_check <- ifelse(pedestrian.df$involved_injury_class == "FATAL" | pedestrian.df$involved_injury_class == "MAJOR", 1, 0)
+prop.table(table(pedestrian.df$ksi_check))
+
+pedestrian.df$nonksi_check <- ifelse(pedestrian.df$involved_injury_class == "MINOR" | pedestrian.df$involved_injury_class == "MINIMAL", 1, 0)
+prop.table(table(pedestrian.df$nonksi_check))
+
+# major imbalance between non-ksi vs. ksi collisions (9:1 ratio).. there is a slight difference in dim size between the two and couldn't figure out why
+
+# pair-wise correlations of numerical variables 
+pedestrian.df$AREA_S_CD <- as.character(pedestrian.df$AREA_S_CD)
+pedestrian.df$collision_id <- as.character(pedestrian.df$collision_id)
+pedestrian.df$LFN_ID <- as.character(pedestrian.df$LFN_ID)
+pedestrian.df$child_check <- as.factor(pedestrian.df$child_check)
+pedestrian.df$senior_check <- as.factor(pedestrian.df$senior_check)
+pedestrian.df$minority_check <- as.factor(pedestrian.df$minority_check)
+pedestrian.df$immigrants_check <- as.factor(pedestrian.df$immigrants_check)
+pedestrian.df$commute_car_check <- as.factor(pedestrian.df$commute_car_check)
+pedestrian.df$businesses_check <- as.factor(pedestrian.df$businesses_check)
+pedestrian.df$childcare_check <- as.factor(pedestrian.df$childcare_check)
+pedestrian.df$homeprice_check <- as.factor(pedestrian.df$homeprice_check)
+pedestrian.df$localemployment_check <- as.factor(pedestrian.df$localemployment_check)
+pedestrian.df$socialasst_check <- as.factor(pedestrian.df$socialasst_check)
+pedestrian.df$ttc_check <- as.factor(pedestrian.df$ttc_check)
+pedestrian.df$road_km_check <- as.factor(pedestrian.df$road_km_check)
+pedestrian.df$road_vol_check <- as.factor(pedestrian.df$road_vol_check)
+pedestrian.df$ksi_check <- as.factor(pedestrian.df$ksi_check)
+pedestrian.df$nonksi_check <- as.factor(pedestrian.df$nonksi_check)
+
+library(mlbench)
+library(caret)
+library(corrplot)
+
+cor_pedestrian.df <- cor(Filter(is.numeric, pedestrian.df))
+pedestrian.df_num <- Filter(is.numeric, pedestrian.df)
+
+# Function to calc p values in correlation matrix
+cor.mtest <- function(mat, ...) {
+  mat <- as.matrix(mat)
+  n <- ncol(mat)
+  p.mat<- matrix(NA, n, n)
+  diag(p.mat) <- 0
+  for (i in 1:(n - 1)) {
+    for (j in (i + 1):n) {
+      tmp <- cor.test(mat[, i], mat[, j], ...)
+      p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
+    }
+  }
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  p.mat
+}
+
+p.mat <- cor.mtest(cor_pedestrian.df)
+colnames(cor_pedestrian.df) <- abbreviate(colnames(cor_pedestrian.df), minlength=30)
+rownames(cor_pedestrian.df) <- abbreviate(rownames(cor_pedestrian.df), minlength=30)
+
+corrplot(cor_pedestrian.df, method = "ellipse", type = "lower", diag = F, insig = "blank", sig.level = 0.05, p.mat = p.mat, tl.cex = 0.55)
+# there are way too many statistically significant correlations between variables so need to reduce dimensions further to make any sense of it 
+
+# what are the top 20 neighbourhoods in terms of collisions?
+library("sqldf")
+pedestrian <- pedestrian.df
+sqldf("select AREA_NAME as neighbourhood, count(*) as collisions from pedestrian group by neighbourhood order by collisions desc limit 20")
+
+#what are the top 20 streets in terms of pedestrian collisions?
+sqldf("select street1, count(*) as collisions from pedestrian group by street1 order by collisions desc limit 20")
+
+# what is the distribution of collisions based on road type?
+sqldf("select road_class, count(*) as collisions from pedestrian group by road_class order by collisions desc")
+
+#what is the distribution of collisions by light conditions? 
+sqldf("select light, count(*) as collisions from pedestrian group by light order by collisions desc")
+
+# what is the distribution of age of collision victims? 
+pedestrian.df$ksi_check <- as.factor(pedestrian.df$ksi_check)
+  
+ggplot(pedestrian.df, aes(x = involved_age, fill = ksi_check)) +
+  theme_bw() +
+  geom_histogram(binwidth = 10) +
+  labs(y = "Number of Collisions", x = "Age")
+```
+
+*Kernel Density Estimation (KDE)*
+```{r}
+# KDE is the standard method used in most of the traffic safety literature. KDE groups densities of points into 3-dimensional "humps" or kernels along a specificed threshold. I used a KDE in the exploratory data analysis stage above, but didn't pull those high collision zones into the data set as a new feature. 
+
+# Below, I reconstruct the KDE to my specifications and then create a new feature in the dataset called zone which assigns every collision falling within at least 70% of the surface area of the KDE one of four zones according to the levels set below (70%, 50%, 25%, 10%). 
+
+# I can then use the zone attribute to look at shared characteristics of collisions within each zone beyond geographic proximity. 
+
+library(MASS)
+library(sp)
+library(reshape2)
+
+plot(pedestrian.df$longitude, pedestrian.df$latitude)
+
+# a function to create the contour levels for the KDE
+getLevel <- function(x,y,prob) { 
+    kk <- MASS::kde2d(x,y)
+    dx <- diff(kk$x[1:2])
+    dy <- diff(kk$y[1:2])
+    sz <- sort(kk$z)
+    c1 <- cumsum(sz) * dx * dy
+    approx(c1, sz, xout = 1 - prob)$y
+}
+
+kk <- MASS::kde2d(pedestrian.df$longitude, pedestrian.df$latitude)
+dimnames(kk$z) <- list(kk$x, kk$y)
+dc <- melt(kk$z)
+
+
+# we want to draw contours around 70, 50, 25, 10% of all collisions 
+L70 <- getLevel(pedestrian.df$longitude, pedestrian.df$latitude, 0.7)
+L50 <- getLevel(pedestrian.df$longitude, pedestrian.df$latitude, 0.5)
+L25 <- getLevel(pedestrian.df$longitude, pedestrian.df$latitude, 0.25)
+L10 <- getLevel(pedestrian.df$longitude, pedestrian.df$latitude, 0.1)
+
+# create a new feature which labels each collision to the contour zone it belogns to using points within contours 
+dens <- kde2d(pedestrian.df$longitude, pedestrian.df$latitude, n=200)
+ls <- contourLines(dens, level=c(L70, L50, L25, L10))
+zone_1 <- point.in.polygon(pedestrian.df$longitude, pedestrian.df$latitude, ls[[4]]$x, ls[[4]]$y)
+zone_2 <- point.in.polygon(pedestrian.df$longitude, pedestrian.df$latitude, ls[[3]]$x, ls[[3]]$y)
+zone_3 <- point.in.polygon(pedestrian.df$longitude, pedestrian.df$latitude, ls[[2]]$x, ls[[2]]$y)
+zone_4 <- point.in.polygon(pedestrian.df$longitude, pedestrian.df$latitude, ls[[1]]$x, ls[[1]]$y)
+pedestrian.df$zone <- factor(zone_1+zone_2+zone_3+zone_4)
+pedestrian.df$zone_1 <- as.factor(zone_1)
+pedestrian.df$zone_2 <- as.factor(zone_2)
+pedestrian.df$zone_3 <- as.factor(zone_3)
+pedestrian.df$zone_4 <- as.factor(zone_4)
+
+# show the distribution of collisions by zone
+table(max.col(pedestrian.df[,86:89]))
+
+# plot the results
+plot(latitude ~ longitude, col = zone, data = pedestrian.df) +
+  contour(dens, levels=c(L10, L25, L50, L70), add = T)
+
+# more pretty chart of the above 
+map <- ggplot(dc, aes(x=Var1, y=Var2)) + geom_tile(aes(fill=value))
+map + geom_contour(aes(z=value), breaks=L70, colour="green") + geom_contour(aes(z=value), breaks=L50, color="yellow") + geom_contour(aes(z=value), breaks=L25, color="orange") + geom_contour(aes(z=value), breaks=L10, color="red")
+
+```
+
+*Creating a Training and Test Set*
+```{r}
+library(caret)
+
+# create random stratified sample so that the proportion of collisions from the four zones
+# in order to maintain this proporation we must collapse the four zone features into one column; this also reduces dimensionality
+
+pedestrian.df$zone <- max.col(pedestrian.df[,c(86:89)])
+pedestrian.df$zone <- as.factor(pedestrian.df$zone)
+pedestrian.df[,c(86:89)] <- NULL
+
+set.seed(123)
+index <- createDataPartition(pedestrian.df$zone, times = 1, p = 0.75, list = F)
+train_pedestrian <- pedestrian.df[index,]
+test_pedestrian <- pedestrian.df[-index,]
+
+prop.table(table(train_pedestrian$zone))
+prop.table(table(test_pedestrian$zone))
+```
+
+
+
+*K-means Clustering Model*
+```{r}
+# Before applying k-means, we must find k, the optimal number of clusters 
+library(factoextra)
+library(NbClust)
+library(doSNOW)
+
+# Normalizing numerical values (except for longitude and latitude)
+train_pedestrian_num <- Filter(is.numeric, train_pedestrian)
+train_pedestrian_num_norm <- scale(train_pedestrian_num[,-c(2,3)])
+train_pedestrian_num_norm <- as.data.frame(train_pedestrian_num_norm)
+#train_pedestrian_num_norm$longitude <- train_pedestrian_num$longitude
+#train_pedestrian_num_norm$latitude <- train_pedestrian_num$latitude
+#train_pedestrian_num_norm$zone <- train_pedestrian$zone
+
+head(train_pedestrian_num_norm)
+
+# creating parallel processing clusters 
+cl <- makeCluster(3, type = "SOCK")
+registerDoSNOW(cl)
+
+# Using avg silhouette to determine optimal k clusters 
+fviz_nbclust(train_pedestrian_num_norm, kmeans, method = "silhouette") + labs(subtitle = "Silhouette Method")
+# silhouette method suggests 2 clusters
+
+# Elbow method
+fviz_nbclust(train_pedestrian_num_norm, kmeans, method = "wss") + geom_vline(xintercept = 4, linetype = 2) +
+  labs(subtitle = "Elbow method")
+# elbow method suggests 4 clusters 
+gc()
+Cluster(cl)
+
+# we can go either 2 or 4 clusters - I will pick 4
+set.seed(123)
+train_kmeans <- kmeans(train_pedestrian_num_norm, 4, nstart = 5)
+train_pedestrian_num_norm$cluster <- as.factor(train_kmeans$cluster)
+train_pedestrian_num_norm$longitude <- train_pedestrian$longitude 
+train_pedestrian_num_norm$latitude <- train_pedestrian$latitude
+train_pedestrian_num_norm$zone <- train_pedestrian$zone
+
+toronto_map + geom_point(aes(x = longitude, y = latitude, color = cluster, alpha = 0.4), data = train_pedestrian_num_norm)
+
+toronto_map + stat_density2d(aes(x = longitude, y = latitude, fill = zone, alpha = 0.4, color = 'cyan'), data = train_pedestrian_num_norm, size = 0.1, bins = 4, geom = "polygon")
+
+```
+
+```{r}
+
+
+# for Density-based Clustering (DBSCAN) and visualization of clusters 
+library("fpc")
+library("dbscan")
+library("factoextra")
+
+
+```
+
+
+
+*Feature Selection & Dimensionality Reduction*
+```{r}
+dim(train_pedestrian) # there are 86 features
+dim(train_pedestrian_num) # 57 of them are numerical
+
+# We will use Principal Component Analysis on these 57 numerical variables to reduce the dimensionality to the features that capture most of the variance 
+
+pedestrian.df_num_pca <- prcomp(train_pedestrian_num, center = T, scale. = T)
+summary(pedestrian.df_num_pca)
+
+#compute standard deviation of each principal component
+std_dev <- pedestrian.df_num_pca$sdev
+
+#compute variance
+pr_var <- std_dev^2
+
+#proportion of variance explained 
+variance_explained <- pr_var/sum(pr_var)
+
+plot(cumsum(variance_explained), xlab = "Principal Component", ylab = "Cumulative Proporation of Variance Explained", type = "b")
+# PC1-10 explain approx 80% of the variance in the dataset and that keeping 25 components explains about 95% 
+
+train_pedestrian_pca <- data.frame(collision_id = train_pedestrian$collision_id, ksi_check = train_pedestrian$ksi_check, pedestrian.df_num_pca$x)
+train_pedestrian_pca
+```
+
+
+
+
+
